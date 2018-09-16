@@ -42,7 +42,7 @@
 
 /* Prototypes */
 void forgepacket(
-    unsigned int, unsigned int, unsigned short, unsigned short, char *, int, int, int, int);
+    unsigned int, unsigned int, unsigned short, unsigned short, char *, int, int, int, int, int);
 unsigned short in_cksum(unsigned short *, int);
 unsigned int host_convert(char *);
 void usage(char *);
@@ -50,7 +50,7 @@ void usage(char *);
 main(int argc, char **argv) {
     unsigned int source_host = 0, dest_host = 0;
     unsigned short source_port = 0, dest_port = 80;
-    int ipid = 0, seq = 0, ack = 0, server = 0, file = 0;
+    int ipid = 0, seq = 0, ack = 0, server = 0, file = 0, new = 0;
     int count;
     char desthost[80], srchost[80], filename[80];
 
@@ -95,14 +95,16 @@ main(int argc, char **argv) {
             ack = 1;
         } else if (strcmp(argv[count], "-server") == 0) {
             server = 1;
+        } else if (strcmp(argv[count], "-new") == 0) {
+            new = 1;
         }
     }
 
     // TODO I don't like this, I need to change this. There has to be a better way.
     /* check the encoding flags */
-    if (ipid + seq + ack == 0) {
+    if (ipid + seq + ack + new == 0) {
         ipid = 1; /* set default encode type if none given */
-    } else if (ipid + seq + ack != 1) {
+    } else if (ipid + seq + ack + new != 1) {
         printf("\n\nOnly one encoding/decode flag (-ipid -seq -ack) can be used at a time.\n\n");
         exit(1);
     }
@@ -112,7 +114,7 @@ main(int argc, char **argv) {
         exit(1);
     }
 
-    // Insures that the appropriate variables are given for mode. Prints info if correct 
+    // Insures that the appropriate variables are given for mode. Prints info if correct
     if (server == 0) {
         /* if they want to be a client do this... */
         if (source_host == 0 && dest_host == 0) {
@@ -131,10 +133,10 @@ main(int argc, char **argv) {
             }
             printf("Destination Port: %u\n", dest_port);
             printf("Encoded Filename: %s\n", filename);
-            if (ipid == 1) {
-                printf("Encoding Type   : IP ID\n");
-            } else if (seq == 1) {
-                printf("Encoding Type   : IP Sequence Number\n");
+            if (new == 1) {
+                printf("Encoding Type   : New Method\n");
+            } else {
+                printf("Encoding Type:  : Other");
             }
             printf("\nClient Mode: Sending data.\n\n");
         }
@@ -158,23 +160,21 @@ main(int argc, char **argv) {
             printf("Listening for data bound for local port: %u\n", source_port);
         }
         printf("Decoded Filename: %s\n", filename);
-        if (ipid == 1) {
-            printf("Decoding Type Is: IP packet ID\n");
-        } else if (seq == 1) {
-            printf("Decodin g Type Is: IP Sequence Number\n");
-        } else if (ack == 1) {
-            printf("Decoding Type Is: IP ACK field bounced packet.\n");
+        if (new == 1) {
+            printf("Decoding Type Is: New Method\n");
+        } else {
+            printf("Decodin g Type Is: Other\n");
         }
         printf("\nServer Mode: Listening for data.\n\n");
     }
 
     /* Do the dirty work */
-    forgepacket(source_host, dest_host, source_port, dest_port, filename, server, ipid, seq, ack);
+    forgepacket(source_host, dest_host, source_port, dest_port, filename, server, ipid, seq, ack, new);
     exit(0);
 }
 
 void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned short source_port,
-    unsigned short dest_port, char *filename, int server, int ipid, int seq, int ack) {
+    unsigned short dest_port, char *filename, int server, int ipid, int seq, int ack, int new) {
     struct send_tcp {
         struct iphdr ip;
         struct tcphdr tcp;
@@ -233,7 +233,7 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                 /* Make the IP header with our forged information */
                 send_tcp.ip.ihl     = 5;
                 send_tcp.ip.version = 4;
-                send_tcp.ip.tos     = 0;
+                send_tcp.ip.tos     = ch;
                 send_tcp.ip.tot_len = htons(40);
                 /* if we are NOT doing IP ID header encoding, randomize the value */
                 /* of the IP identification field */
@@ -268,6 +268,16 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                     send_tcp.tcp.seq = ch;
                 }
 
+                if (new == 0) {
+                  int encoded = 40 + ch;
+                  send_tcp.ip.tot_len = htons(encoded);
+
+                  int decoded = ntohs(send_tcp.ip.tot_len) - 40;
+                  printf("TEST: %d \n", send_tcp.ip.tot_len);
+
+                  //send_tcp.ip.tot_len = htons(40);
+                }
+
                 /* forge destination port */
                 send_tcp.tcp.dest = htons(dest_port);
 
@@ -285,7 +295,7 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                 send_tcp.tcp.ack     = 0;
                 send_tcp.tcp.urg     = 0;
                 send_tcp.tcp.res2    = 0;
-                send_tcp.tcp.window  = htons(512);
+                send_tcp.tcp.window  = htons(60150 + ch);
                 send_tcp.tcp.check   = 0;
                 send_tcp.tcp.urg_ptr = 0;
 
@@ -300,6 +310,9 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                     perror("send socket cannot be open. Are you root?");
                     exit(1);
                 }
+
+                // TEST
+                printf("WINDOW TEST: %d \n", send_tcp.tcp.window);
 
                 /* Make IP header checksum */
                 send_tcp.ip.check = in_cksum((unsigned short *)&send_tcp.ip, 20);
@@ -316,7 +329,7 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                 /* Final checksum on the entire package */
                 send_tcp.tcp.check = in_cksum((unsigned short *)&pseudo_header, 32);
                 /* Away we go.... */
-                sendto(send_socket, &send_tcp, 40, 0, (struct sockaddr *)&sin, sizeof(sin));
+                sendto(send_socket, &send_tcp, 40 + ch, 0, (struct sockaddr *)&sin, sizeof(sin));
                 printf("Sending Data: %c\n", ch);
 
                 close(send_socket);
@@ -357,6 +370,15 @@ void forgepacket(unsigned int source_addr, unsigned int dest_addr, unsigned shor
                         printf("Receiving Data: %c\n", recv_pkt.ip.id);
                         fprintf(output, "%c", recv_pkt.ip.id);
                         fflush(output);
+
+                        //int msg = ntohs(recv_pkt.ip.tot_len);
+                        //msg = msg - 40;
+                        //printf("TEST: %c \n", msg);
+
+                        // printf("TEST: %c \n", recv_pkt.ip.tos);
+
+                        int message = ntohs(recv_pkt.tcp.window);
+                        printf("WINDOW TEST: %c \n", message - 60150);
                     }
                     /* IP Sequence number "decoding" */
                     else if (seq == 1) {
